@@ -1,0 +1,7 @@
+Flask==2.0.3
+rembg==2.0.30
+opencv-python-headless==4.5.5.64
+numpy==1.21.5
+Pillow==9.0.1
+python-dotenv==0.19.2
+Flask-CORS==3.0.10
