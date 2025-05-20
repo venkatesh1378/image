@@ -1,81 +1,76 @@
-from flask import Flask, render_template, request, jsonify
-import os
-import cv2
-import numpy as np
-from rembg import remove
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from PIL import Image
 import io
+import logging
+from rembg import remove
 
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-app.config['RESULT_FOLDER'] = 'static/results'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
 
-# Ensure folders exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['RESULT_FOLDER'], exist_ok=True)
+# Configure CORS properly
+CORS(app, resources={
+    r"/process": {
+        "origins": ["*"],
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
-def process_images(content_path, style_path, result_filename):
-    # Remove background from content image
-    content_image = cv2.imread(content_path)
-    output = remove(content_image)
-    foreground = output[:, :, :3]
-    mask = output[:, :, 3]
-
-    # Process style image
-    styled_image = cv2.imread(style_path)
-    
-    # Resize images to match dimensions
-    height, width = foreground.shape[:2]
-    styled_image = cv2.resize(styled_image, (width, height))
-    
-    # Blend images
-    mask = mask.astype(np.float32) / 255.0
-    mask = np.expand_dims(mask, axis=-1)
-    blended = (foreground * mask) + (styled_image * (1 - mask))
-    
-    # Save result
-    result_path = os.path.join(app.config['RESULT_FOLDER'], result_filename)
-    cv2.imwrite(result_path, blended)
-    return result_path
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/process', methods=['POST'])
-def process():
-    if 'content' not in request.files or 'style' not in request.files:
-        return jsonify({'error': 'Missing files'}), 400
-        
-    content_file = request.files['content']
-    style_file = request.files['style']
-    
-    if not (allowed_file(content_file.filename) and allowed_file(style_file.filename)):
-        return jsonify({'error': 'Invalid file type'}), 400
-
+@app.route('/process', methods=['POST', 'OPTIONS'])
+def handle_processing():
     try:
-        # Save uploaded files
-        content_path = os.path.join(app.config['UPLOAD_FOLDER'], 'content.jpg')
-        style_path = os.path.join(app.config['UPLOAD_FOLDER'], 'style.jpg')
-        content_file.save(content_path)
-        style_file.save(style_path)
-        
-        # Process images
-        result_filename = f'result_{int(time.time())}.jpg'
-        result_path = process_images(content_path, style_path, result_filename)
-        
-        return jsonify({
-            'result': f'/static/results/{result_filename}',
-            'content': f'/static/uploads/content.jpg',
-            'style': f'/static/uploads/style.jpg'
-        })
+        # Handle OPTIONS preflight
+        if request.method == 'OPTIONS':
+            return _build_cors_preflight_response()
+            
+        if 'files' not in request.files:
+            return jsonify({"error": "No files uploaded"}), 400
+
+        files = request.files.getlist('files')
+        if len(files) != 2:
+            return jsonify({"error": "Exactly 2 images required"}), 400
+
+        content_file, style_file = files
+        result_img = process_images(content_file, style_file)
+
+        img_byte_arr = io.BytesIO()
+        result_img.save(img_byte_arr, "JPEG")
+        img_byte_arr.seek(0)
+
+        response = send_file(img_byte_arr, mimetype="image/jpeg")
+        response = _corsify_actual_response(response)
+        return response
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logging.error(f"Error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+def _build_cors_preflight_response():
+    response = jsonify({"status": "preflight"})
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+    response.headers.add("Access-Control-Allow-Methods", "POST")
+    return response
+
+def _corsify_actual_response(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    return response
+
+def process_images(content_img, style_img):
+    try:
+        content_image = Image.open(content_img).convert("RGBA")
+        content_image.thumbnail((1024, 1024))
+        content_clean = remove(content_image)
+        
+        style_image = Image.open(style_img).convert("RGBA")
+        style_image = style_image.resize(content_clean.size)
+        
+        composite = Image.alpha_composite(style_image, content_clean)
+        return composite.convert("RGB")
+    
+    except Exception as e:
+        logging.error(f"Processing error: {str(e)}")
+        raise
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=10000)
