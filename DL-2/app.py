@@ -16,34 +16,48 @@ CORS(app, resources={
     }
 })
 
-@app.route('/process', methods=['POST', 'OPTIONS'])
+@app.route('/process', methods=['POST'])
 def handle_processing():
     try:
-        # Handle OPTIONS preflight
-        if request.method == 'OPTIONS':
-            return _build_cors_preflight_response()
-            
+        app.logger.info("New request received")
+        
         if 'files' not in request.files:
+            app.logger.warning("No files part in request")
             return jsonify({"error": "No files uploaded"}), 400
 
         files = request.files.getlist('files')
+        app.logger.info(f"Received {len(files)} files")
+        
         if len(files) != 2:
+            app.logger.warning(f"Incorrect file count: {len(files)}")
             return jsonify({"error": "Exactly 2 images required"}), 400
 
+        # Verify file content
+        for f in files:
+            if f.filename == '':
+                app.logger.warning("Empty filename detected")
+                return jsonify({"error": "Empty file submitted"}), 400
+            if not f.content_type.startswith('image/'):
+                app.logger.warning(f"Invalid file type: {f.content_type}")
+                return jsonify({"error": "Only images allowed"}), 400
+
         content_file, style_file = files
+        app.logger.info(f"Processing files: {content_file.filename} and {style_file.filename}")
+        
         result_img = process_images(content_file, style_file)
+        app.logger.info("Image processing completed")
 
         img_byte_arr = io.BytesIO()
-        result_img.save(img_byte_arr, "JPEG")
+        result_img.save(img_byte_arr, "JPEG", quality=90)
         img_byte_arr.seek(0)
+        app.logger.info(f"Response size: {len(img_byte_arr.getvalue())} bytes")
 
-        response = send_file(img_byte_arr, mimetype="image/jpeg")
-        response = _corsify_actual_response(response)
-        return response
+        return send_file(img_byte_arr, mimetype="image/jpeg")
 
     except Exception as e:
-        logging.error(f"Error: {str(e)}")
+        app.logger.error(f"Critical error: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+
 
 def _build_cors_preflight_response():
     response = jsonify({"status": "preflight"})
